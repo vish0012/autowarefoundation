@@ -13,6 +13,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ---------------- existing jobs (unchanged) ----------------
   label-check:
     uses: autowarefoundation/autoware-github-actions/.github/workflows/make-sure-label-is-present.yaml@v1
     with:
@@ -96,134 +97,115 @@ jobs:
         if: always()
         run: df -h
 
-  # ------------------------------------------------------------------
-  # New Job trying : Run scenario-test on every Pull Request automatically
-  # ------------------------------------------------------------------
+  # ---------------- new job trial i try to do : scenario test runs on EVERY PR ----------------
   scenario-test:
     name: Scenario Test (PR health check)
+    # run for PRs / schedule / manual; not gated by label-check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    needs: docker-build
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     container:
       image: ghcr.io/autowarefoundation/autoware:universe-devel
       options: --privileged
 
     steps:
-      - name: Check out repository
+      - name: Checkout (PR contents)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install required packages
         shell: bash
         run: |
+          set -euo pipefail
           apt-get update
           apt-get install -y unzip zip curl gnupg2 lsb-release python3-pip git
-          pip install --upgrade gdown vcstool
+          pip3 install --upgrade gdown vcstool xmlschema==3.4.5
 
       - name: Show memory info
         shell: bash
         run: free -h
 
-      - name: Clone Autoware and Import simulator.repos
+      - name: Prepare workspace (use PR .repos)
         shell: bash
         run: |
-          git clone https://github.com/autowarefoundation/autoware.git ~/autoware_ws
-          cd ~/autoware_ws
-          mkdir src
-          vcs import src < simulator.repos
+          set -euo pipefail
+          mkdir -p src
+          if [ -f autoware.repos ]; then vcs import src < autoware.repos; fi
+          if [ -f simulator.repos ]; then vcs import src < simulator.repos; fi
 
       - name: Install ROS dependencies
         shell: bash
         run: |
-          cd ~/autoware_ws
+          set -euo pipefail
           source /opt/ros/humble/setup.bash
-          source /opt/autoware/setup.bash
           rosdep update
-          rosdep install --from-paths src --ignore-src -r -y
+          rosdep install -y --from-paths src --ignore-src --rosdistro humble
 
-      - name: Downgrade xmlschema
+      - name: Build workspace (Release, low RAM)
         shell: bash
         run: |
-          pip3 install --user xmlschema==3.4.5
-
-      - name: Build Autoware Workspace
-        shell: bash
-        run: |
-          cd ~/autoware_ws
-          rm -rf build install log
+          set -euo pipefail
           source /opt/ros/humble/setup.bash
-          source /opt/autoware/setup.bash
           export CMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --executor sequential
 
-      - name: Check Autoware installation
+      - name: Check scenario_test_runner presence
         shell: bash
         run: |
-          source ~/autoware_ws/install/setup.bash
-          ros2 pkg list | grep autoware
+          source install/setup.bash
+          ros2 pkg list | grep -q scenario_test_runner || { echo "::error::scenario_test_runner not found"; exit 1; }
 
-      - name: Download scenario file
+      - name: Download scenario + map
         shell: bash
         run: |
+          set -euo pipefail
           gdown --id 1Tq7snfDPsuPHPtl50aL5fJY6paiC-HxV -O sample-scenario.yaml
-
-      - name: Download sample-map-planning maps
-        shell: bash
-        run: |
-          mkdir -p $HOME/autoware_map
+          mkdir -p "$HOME/autoware_map"
           gdown --id 1499_nsbUbIeturZaDj7jhUownh5fvXHd -O sample-map-planning.zip
-          unzip sample-map-planning.zip -d $HOME/autoware_map
+          unzip -o sample-map-planning.zip -d "$HOME/autoware_map"
+          sed -i "s@/home/user/@$HOME/@g" sample-scenario.yaml
 
-      - name: Fix paths in sample-scenario.yaml
+      - name: Run scenario_test_runner
         shell: bash
-        run: sed -i "s@/home/user/@$HOME/@g" sample-scenario.yaml
+        env:
+          RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+        run: |
+          set -euo pipefail
+          source install/setup.bash
+          mkdir -p ./results
+          ros2 launch scenario_test_runner scenario_test_runner.launch.py \
+            architecture_type:=awf/universe/20250130 \
+            record:=true \
+            scenario:="$PWD/sample-scenario.yaml" \
+            sensor_model:=sample_sensor_kit \
+            vehicle_model:=sample_vehicle \
+            initialize_duration:=300 \
+            output_directory:="$PWD/results" \
+            simulate_localization:=true \
+            initial_pose:="[0.0, 0.0, 0.0]" \
+            launch_rviz:=false \
+            frame_rate:=1 \
+            disable_lanelet_pose_validation:=true 2>&1 | tee scenario_output.log || true
 
-      - name: Launch scenario_test_runner with diagnostics
+      - name: Check JUnit result
         shell: bash
         run: |
-          export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-          SCENARIO_FILE="./sample-scenario.yaml"
-          source ~/autoware_ws/install/setup.bash
-          if [ -f "$SCENARIO_FILE" ]; then
-            echo "Launching scenario_test_runner..."
-            mkdir -p ./results
-            ros2 launch scenario_test_runner scenario_test_runner.launch.py \
-              architecture_type:=awf/universe/20250130 \
-              record:=true \
-              scenario:="$SCENARIO_FILE" \
-              sensor_model:=sample_sensor_kit \
-              vehicle_model:=sample_vehicle \
-              initialize_duration:=300 \
-              output_directory:=./results \
-              simulate_localization:=true \
-              initial_pose:="[0.0, 0.0, 0.0]" \
-              launch_rviz:=false \
-              frame_rate:=1 \
-              disable_lanelet_pose_validation:=true 2>&1 | tee scenario_output.log || true
-          else
-            echo "::error::sample-scenario.yaml is missing!"
-            exit 1
-          fi
-
-      - name: Check for Test Failures
-        shell: bash
-        run: |
-          RESULT_FILE="./results/scenario_test_runner/result.junit.xml"
-          if [ ! -f "$RESULT_FILE" ]; then
+          RESULT="./results/scenario_test_runner/result.junit.xml"
+          if [ ! -f "$RESULT" ]; then
             echo "::error::Result file not found! Simulation likely crashed."
             exit 1
           fi
-          if grep -q -E '<failure|<error' "$RESULT_FILE"; then
-            echo "::error::Test failures detected."
-            cat "$RESULT_FILE"
+          if grep -q -E '<failure|<error' "$RESULT"; then
+            echo "::error::Scenario test reported failures."
+            cat "$RESULT"
             exit 1
-          else
-            echo " Scenario test passed."
           fi
+          echo " Scenario test passed."
 
-      - name: Upload Artifacts
+      - name: Upload artifacts (logs & results)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -233,11 +215,10 @@ jobs:
             ./scenario_output.log
             ~/.ros/log/
 
-      - name: Kill lingering ROS nodes (cleanup)
+      - name: Cleanup lingering ROS
         if: always()
         shell: bash
         run: |
-          echo "Killing lingering ROS processes..."
           pkill -9 -f ros2 || true
           pkill -9 -f scenario_test_runner || true
           pkill -9 -f openscenario_interpreter_node || true
