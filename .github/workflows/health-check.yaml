@@ -97,7 +97,7 @@ jobs:
         run: df -h
 
   # ------------------------------------------------------------------
-  # 🧪 New Job: Run scenario-test on every Pull Request automatically
+  # New Job trying : Run scenario-test on every Pull Request automatically
   # ------------------------------------------------------------------
   scenario-test:
     name: Scenario Test (PR health check)
@@ -220,7 +220,7 @@ jobs:
             cat "$RESULT_FILE"
             exit 1
           else
-            echo "✅ Scenario test passed."
+            echo " Scenario test passed."
           fi
 
       - name: Upload Artifacts
