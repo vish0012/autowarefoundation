@@ -97,10 +97,10 @@ jobs:
         if: always()
         run: df -h
 
-  # ---------------- new job trial i try to do : scenario test runs on EVERY PR ----------------
+  # ---------------- new jobi trying: scenario test runs on EVERY PR ----------------
   scenario-test:
     name: Scenario Test (PR health check)
-    # run for PRs / schedule / manual; not gated by label-check
+    # Run for PRs / schedule / manual; not gated by label-check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -116,8 +116,10 @@ jobs:
 
       - name: Install required packages
         shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          set -euo pipefail
+          set -eo pipefail
           apt-get update
           apt-get install -y unzip zip curl gnupg2 lsb-release python3-pip git
           pip3 install --upgrade gdown vcstool xmlschema==3.4.5
@@ -126,7 +128,7 @@ jobs:
         shell: bash
         run: free -h
 
-      - name: Prepare workspace (use PR .repos)
+      - name: Prepare workspace (use PR .repos if present)
         shell: bash
         run: |
           set -euo pipefail
@@ -137,16 +139,21 @@ jobs:
       - name: Install ROS dependencies
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          # Avoid AMENT_TRACE_SETUP_FILES unbound var issue
+          set +u
           source /opt/ros/humble/setup.bash
+          set -u
           rosdep update
           rosdep install -y --from-paths src --ignore-src --rosdistro humble
 
       - name: Build workspace (Release, low RAM)
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          set +u
           source /opt/ros/humble/setup.bash
+          set -u
           export CMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
@@ -155,7 +162,10 @@ jobs:
       - name: Check scenario_test_runner presence
         shell: bash
         run: |
+          set -euo pipefail
+          set +u
           source install/setup.bash
+          set -u
           ros2 pkg list | grep -q scenario_test_runner || { echo "::error::scenario_test_runner not found"; exit 1; }
 
       - name: Download scenario + map
@@ -173,8 +183,10 @@ jobs:
         env:
           RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          set +u
           source install/setup.bash
+          set -u
           mkdir -p ./results
           ros2 launch scenario_test_runner scenario_test_runner.launch.py \
             architecture_type:=awf/universe/20250130 \
@@ -193,6 +205,7 @@ jobs:
       - name: Check JUnit result
         shell: bash
         run: |
+          set -euo pipefail
           RESULT="./results/scenario_test_runner/result.junit.xml"
           if [ ! -f "$RESULT" ]; then
             echo "::error::Result file not found! Simulation likely crashed."
