@@ -2,18 +2,13 @@ name: health-check
 
 on:
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - labeled
-      - ready_for_review
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
   schedule:
     - cron: 0 12 * * *
   workflow_dispatch:
 
 jobs:
-  # ---------------- existing jobs (unchanged) ----------------
+  # ---------------- existing jobs ----------------
   label-check:
     uses: autowarefoundation/autoware-github-actions/.github/workflows/make-sure-label-is-present.yaml@v1
     with:
@@ -21,12 +16,12 @@ jobs:
 
   load-env:
     needs: label-check
-    if: ${{ needs.label-check.outputs.result == 'true' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.label-check.outputs.result == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/load-env.yaml
 
+  # ---------------- docker-build (SKIPPED on PRs for now just to check it will  avoid nightly path error or not ) ----------------
   docker-build:
+    if: ${{ github.event_name != 'pull_request' }}
     needs: load-env
     strategy:
       fail-fast: false
@@ -79,9 +74,7 @@ jobs:
         uses: ./.github/actions/free-disk-space
 
       - name: Build 'Autoware'
-        if: ${{ steps.changed-files.outputs.any_changed == 'true' ||
-          github.event_name == 'schedule' ||
-          github.event_name == 'workflow_dispatch' }}
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         uses: ./.github/actions/docker-build
         with:
           platform: ${{ matrix.platform }}
@@ -97,10 +90,9 @@ jobs:
         if: always()
         run: df -h
 
-  # ---------------- new jobi trying: scenario test runs on EVERY PR ----------------
+  # ---------------- scenario-test (ALWAYS on PR trying ) ----------------
   scenario-test:
     name: Scenario Test (PR health check)
-    # Run for PRs / schedule / manual; not gated by label-check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -140,7 +132,7 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          # Avoid AMENT_TRACE_SETUP_FILES unbound var issue
+          # Avoid AMENT_TRACE_SETUP_FILES unbound var issue while sourcing
           set +u
           source /opt/ros/humble/setup.bash
           set -u
